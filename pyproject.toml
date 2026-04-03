@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ipyfoo"
+name = "searchwidget"
 version = "0.0.0"
 dependencies = ["anywidget"]
 readme = "README.md"
@@ -16,13 +16,13 @@ dev = ["watchfiles", "jupyterlab"]
 
 [tool.hatch.build]
 only-packages = true
-packages = ["py/ipyfoo"]
-artifacts = ["py/ipyfoo/static/*"]
+packages = ["py/searchwidget"]
+artifacts = ["py/searchwidget/static/*"]
 
 [tool.hatch.build.hooks.jupyter-builder]
 build-function = "hatch_jupyter_builder.npm_builder"
-ensured-targets = ["py/ipyfoo/static/main.js"]
-skip-if-exists = ["py/ipyfoo/static/main.js"]
+ensured-targets = ["py/searchwidget/static/main.js"]
+skip-if-exists = ["py/searchwidget/static/main.js"]
 dependencies = ["hatch-jupyter-builder>=0.5.0"]
 
 [tool.hatch.build.hooks.jupyter-builder.build-kwargs]

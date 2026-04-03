@@ -1,4 +1,4 @@
-# ipyfoo
+# searchwidget
 
 An template for authoring [anywidget](http://anywidget.dev) with Svelte 5.
 

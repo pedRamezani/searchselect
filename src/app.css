@@ -152,11 +152,12 @@
 	* {
 		@apply border-border outline-ring/50;
 	}
-	body {
-		@apply bg-background text-foreground;
-	}
-	html {
-		@apply font-sans;
+	#app {
+		@apply bg-background text-foreground font-sans;
+	
+		/* table, thead, tbody, tr, th, td {
+			@apply text-start! align-top! bg-transparent! border-none! ;
+		} */
 	}
 }
 

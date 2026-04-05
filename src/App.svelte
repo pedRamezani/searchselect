@@ -14,19 +14,20 @@
 		getPaginationRowModel,
 		getSortedRowModel
 	} from '@tanstack/table-core';
-	import { createRawSnippet } from 'svelte';
 	import DataTableCheckbox from '$lib/data-table/data-table-checkbox.svelte';
 	import DataTableTermButton from '$lib/data-table/data-table-term-button.svelte';
 
 	// Components
 	import { Button } from '$lib/components/ui/button/index.js';
+	import CopyButton from '$lib/components/ui/copy-button/copy-button.svelte';
 	import * as InputGroup from '$lib/components/ui/input-group/index.js';
 	import {
 		FlexRender,
 		createSvelteTable,
-		renderComponent,
-		renderSnippet
+		renderComponent
 	} from '$lib/components/ui/data-table/index.js';
+	import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+	import * as Select from '$lib/components/ui/select/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
 	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
 
@@ -40,7 +41,7 @@
 	import './app.css';
 
 	// Helpers
-	function termLengthFmt(length: number) {
+	function termLengthFmt(length: number): string {
 		if (length === 0) {
 			return 'No terms';
 		} else if (length === 1) {
@@ -51,9 +52,10 @@
 	}
 
 	// Data loading
-	let { bindings }: { bindings: { terms: string[] } } = $props();
-	let uniqueTerms = $derived(Array.from(new Set(bindings.terms)));
-	const termLengthDescription = $derived(termLengthFmt(uniqueTerms.length));
+	let { bindings }: { bindings: { terms: string[]; selected: string[]; filtered: string[] } } =
+		$props();
+	let uniqueTerms = $derived<string[]>(Array.from(new Set(bindings.terms)));
+	const termLengthDescription = $derived<string>(termLengthFmt(uniqueTerms.length));
 
 	// Table setup
 	type Terms = {
@@ -61,7 +63,7 @@
 		term: string;
 	};
 
-	const data: Terms[] = $derived(
+	const data = $derived<Terms[]>(
 		uniqueTerms.map((term, index) => ({
 			id: String(index),
 			term
@@ -114,28 +116,12 @@
 			accessorKey: 'term',
 			header: ({ column }) =>
 				renderComponent(DataTableTermButton, {
+					class: 'text-sm leading-none font-medium',
 					onclick: column.getToggleSortingHandler()
 				}),
-			cell: ({ row }) => {
-				const termSnippet = createRawSnippet<[{ term: string }]>((getTerm) => {
-					const { term } = getTerm();
-					return {
-						render: () => `<div class="lowercase">${term}</div>`
-					};
-				});
-
-				return renderSnippet(termSnippet, {
-					term: row.original.term
-				});
-			},
 			enableHiding: false,
 			filterFn: termsFilterFn
 		}
-		// {
-		// 	id: 'actions',
-		// 	enableHiding: false,
-		// 	cell: ({ row }) => renderComponent(DataTableActions, { id: row.original.id })
-		// }
 	];
 
 	let pagination = $state<PaginationState>({ pageIndex: 0, pageSize: 10 });
@@ -230,29 +216,99 @@
 
 		return true;
 	});
-	const currentStateDescription = $derived(
+	const currentStateDescription = $derived<string>(
 		searchTerm === '' ? termLengthDescription : searchTermValid ? '' : 'Invalid regex'
 	);
 
-	const onSearchTermChange = (
-		e: Event & {
-			currentTarget: EventTarget & HTMLInputElement;
-		}
-	) => {
-		const target = e.currentTarget;
-		table.getColumn('term')?.setFilterValue(target.value);
+	const onSearchTermChange = (searchTerm: string) => {
+		table.getColumn('term')?.setFilterValue(searchTerm);
 	};
+
+	// Output formats
+	const outputFormats = [
+		{ value: 'python', label: 'Python list' },
+		{ value: 'polars', label: 'Polars expression' }
+	] as const;
+
+	let outputFormat = $state<(typeof outputFormats)[number]['value']>('python');
+	const outputFormatTriggerContent = $derived<string>(
+		outputFormats.find((f) => f.value === outputFormat)?.label ?? 'Select an output format'
+	);
+
+	const quotedSelectedTerms = $derived<string[]>(
+		table.getFilteredSelectedRowModel().rows.map((row) => `"${row.getValue('term')}"`)
+	);
+	const indentedJoinedQuotedSelectedTerms = $derived<string | null>(
+		quotedSelectedTerms.length > 0
+			? `<span class="ps-[2ch] block">${quotedSelectedTerms
+					.map((quoted) => `<span class="inline-block font-semibold text-chart-2">${quoted}</span>`)
+					.join(', ')}</span>`
+			: null
+	);
+
+	const rawPythonList = $derived(`[${quotedSelectedTerms.join(', ')}]`);
+	const pythonList = $derived(`[${indentedJoinedQuotedSelectedTerms ?? ''}]`);
+
+	const rawPolarsExpr = $derived(`pl.col(${quotedSelectedTerms.join(', ')})`);
+	const polarsExpr = $derived(`pl.col(${indentedJoinedQuotedSelectedTerms ?? '[]'})`);
+
+	const rawOutput = $derived(outputFormat === 'python' ? rawPythonList : rawPolarsExpr);
+	const output = $derived(outputFormat === 'python' ? pythonList : polarsExpr);
+
+	// Selection
+	// Select full text if clicked, but allows dragging for user to select substrings
+	// Drag treshold
+	const delta: number = 6 as const;
+	let startX: number | undefined;
+	let startY: number | undefined;
+
+	function preMouseDown(
+		event: MouseEvent & {
+			currentTarget: EventTarget & HTMLDivElement;
+		}
+	) {
+		startX = event.pageX;
+		startY = event.pageY;
+	}
+
+	function preMouseUp(
+		event: MouseEvent & {
+			currentTarget: EventTarget & HTMLDivElement;
+		}
+	) {
+		const smallDiffX = startX === undefined || Math.abs(event.pageX - startX) < delta;
+		const smallDiffY = startY === undefined || Math.abs(event.pageY - startY) < delta;
+
+		if (smallDiffX && smallDiffY) {
+			const el = event.currentTarget.querySelector('pre');
+			if (el && window.getSelection && document.createRange) {
+				const sel = window.getSelection();
+				const range = document.createRange();
+				range.selectNodeContents(el);
+				sel?.removeAllRanges();
+				sel?.addRange(range);
+			}
+		}
+	}
+
+	// Binding synchronisation
+	$effect(() => {
+		bindings.selected = table.getFilteredSelectedRowModel().rows.map((row) => row.getValue('term'));
+	});
+	$effect(() => {
+		bindings.filtered = table.getFilteredRowModel().rows.map((row) => row.getValue('term'));
+	});
 </script>
 
-<div class="my-4 flex w-full flex-col gap-4">
+<div id="app" class="my-4 flex w-full max-w-lg flex-col gap-4">
 	<div class="flex flex-col gap-2 md:flex-row">
 		<InputGroup.Root class="max-w-md">
 			<InputGroup.Input
 				bind:value={searchTerm}
 				aria-invalid={!searchTermValid}
 				placeholder="Filter terms..."
-				oninput={onSearchTermChange}
-				onchange={onSearchTermChange}
+				oninput={(e) => onSearchTermChange(e.currentTarget.value)}
+				onchange={(e) => onSearchTermChange(e.currentTarget.value)}
 			/>
 			<InputGroup.Addon>
 				<SearchIcon />
@@ -260,7 +316,13 @@
 			<InputGroup.Addon align="inline-end">{currentStateDescription}</InputGroup.Addon>
 		</InputGroup.Root>
 
-		<ToggleGroup.Root bind:value={searchOptions} variant="outline" size="sm" type="multiple">
+		<ToggleGroup.Root
+			bind:value={searchOptions}
+			onValueChange={() => onSearchTermChange(searchTerm)}
+			variant="outline"
+			size="sm"
+			type="multiple"
+		>
 			<ToggleGroup.Item value="case-insensitive" aria-label="Toggle case insensitive">
 				<CaseSensitiveIcon class="size-4" />
 			</ToggleGroup.Item>
@@ -269,7 +331,7 @@
 			</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
-	<Table.Root class="max-w-md rounded border border-input">
+	<Table.Root class="rounded border border-input">
 		<Table.Header>
 			{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
 				<Table.Row>
@@ -307,7 +369,7 @@
 			{/each}
 		</Table.Body>
 	</Table.Root>
-	<div class="flex items-center justify-end space-x-2 pt-4">
+	<div class="flex items-center justify-end space-x-2">
 		<div class="flex-1 text-sm text-muted-foreground">
 			{table.getFilteredSelectedRowModel().rows.length} of
 			{table.getFilteredRowModel().rows.length} term(s) selected.
@@ -331,4 +393,28 @@
 			</Button>
 		</div>
 	</div>
+	<ScrollArea class="h-48 rounded border border-input">
+		<div
+			class="relative p-4"
+			onmousedown={preMouseDown}
+			onmouseup={preMouseUp}
+			role="textbox"
+			tabindex="0"
+		>
+			<Select.Root type="single" name="favoriteFruit" bind:value={outputFormat}>
+				<Select.Trigger class="mb-2 border-none p-0 text-sm leading-none font-medium">
+					{outputFormatTriggerContent}
+				</Select.Trigger>
+				<Select.Content>
+					{#each outputFormats as output (output.value)}
+						<Select.Item value={output.value} label={output.label}>
+							{output.label}
+						</Select.Item>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+			<pre class="text-wrap">{@html output}</pre>
+			<CopyButton class="absolute top-2 right-2" text={rawOutput} />
+		</div>
+	</ScrollArea>
 </div>

@@ -331,6 +331,69 @@
 			</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
+	<style>
+		/* 
+		VS-Code specific CSS fixes
+		This is needed to override some weird table styles with higher specificity.
+		*/
+
+		table,
+		thead,
+		tr,
+		th,
+		td,
+		tbody {
+			border-color: var(--input);
+			border-spacing: 0;
+			border-collapse: collapse;
+		}
+
+		table {
+			border-style: solid;
+			border-color: var(--input);
+			border-width: 1px;
+		}
+
+		table,
+		th,
+		tr {
+			vertical-align: middle;
+			text-align: left;
+			border-bottom-style: solid;
+			border-bottom-color: var(--input);
+			border-bottom-width: 1px;
+		}
+
+		thead {
+			font-weight: medium;
+			background-color: unset;
+		}
+
+		thead tr[data-state='selected'] {
+			background-color: var(--muted);
+		}
+
+		th th:has([role='checkbox']) {
+			padding-right: calc(var(--spacing) * 0);
+			padding-inline-start: calc(var(--spacing) * 3);
+		}
+
+		td {
+			padding: calc(var(--spacing) * 2);
+		}
+
+		tr:nth-child(even) {
+			background-color: unset;
+		}
+
+		tr:nth-child(even):hover {
+			background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+		}
+
+		tr:nth-child(even)[data-state='selected'] {
+			background-color: var(--muted);
+		}
+	</style>
 	<Table.Root class="rounded border border-input">
 		<Table.Header>
 			{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}

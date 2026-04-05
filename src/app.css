@@ -152,12 +152,8 @@
 	* {
 		@apply border-border outline-ring/50;
 	}
-	#app {
+	#search-widget {
 		@apply bg-background text-foreground font-sans;
-	
-		/* table, thead, tbody, tr, th, td {
-			@apply text-start! align-top! bg-transparent! border-none! ;
-		} */
 	}
 }
 

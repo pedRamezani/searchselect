@@ -116,7 +116,7 @@
 			accessorKey: 'term',
 			header: ({ column }) =>
 				renderComponent(DataTableTermButton, {
-					class: 'text-sm leading-none font-medium',
+					class: 'has-[>svg]:px-0 text-sm leading-none font-medium',
 					onclick: column.getToggleSortingHandler()
 				}),
 			enableHiding: false,
@@ -300,7 +300,7 @@
 	});
 </script>
 
-<div id="app" class="my-4 flex w-full max-w-lg flex-col gap-4">
+<div id="search-widget" class="my-4 flex w-full max-w-lg flex-col gap-4">
 	<div class="flex flex-col gap-2 md:flex-row">
 		<InputGroup.Root class="max-w-md">
 			<InputGroup.Input
@@ -378,6 +378,7 @@
 			<Button
 				variant="outline"
 				size="sm"
+				class="border-input"
 				onclick={() => table.previousPage()}
 				disabled={!table.getCanPreviousPage()}
 			>
@@ -386,6 +387,7 @@
 			<Button
 				variant="outline"
 				size="sm"
+				class="border-input"
 				onclick={() => table.nextPage()}
 				disabled={!table.getCanNextPage()}
 			>

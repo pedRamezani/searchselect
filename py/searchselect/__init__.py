@@ -37,13 +37,31 @@ class SearchSelect(anywidget.AnyWidget):
     #: still exist and drops the rest.
     items = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
-    #: The items the user has explicitly ticked. Writable from Python.
-    #: Filtering the table does not change it.
+    #: The items the user has explicitly ticked. Writable from Python; values
+    #: not present in :attr:`items` are ignored. Filtering never changes it.
     selected = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
-    #: The items matching the current search. With an empty search box this is
-    #: every item, not an empty list.
-    filtered = traitlets.List(traitlets.Unicode()).tag(sync=True)
+    #: The text in the search box. Writable from Python.
+    #:
+    #: Matching happens in the frontend -- it renders what the user sees, so it
+    #: is the authority on what matched. That means `filtered` catches up one
+    #: comm round trip after this is set, not synchronously. With no frontend
+    #: attached (headless, or before the widget renders) nothing matches a
+    #: non-empty query, because nothing is there to do the matching.
+    query = traitlets.Unicode("").tag(sync=True)
+
+    #: The items matching the current query. With an empty query this is every
+    #: item, not an empty list.
+    #:
+    #: Deliberately *not* synced: it is derived locally from `_matches`, so an
+    #: empty query costs no traffic at all. The frontend already has the full
+    #: item list, so echoing it back would double the payload for nothing --
+    #: 22MB each way at a million items.
+    filtered = traitlets.List(traitlets.Unicode())
+
+    #: Frontend -> Python. Only populated while a query is active; cleared to
+    #: an empty list as soon as the query is. Internal; read `filtered`.
+    _matches = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
     def __init__(
         self,
@@ -51,19 +69,15 @@ class SearchSelect(anywidget.AnyWidget):
         selected: list[str] | None = None,
         **kwargs: object,
     ) -> None:
-        _items = _dedupe(list(items or []))
         # `items` must be assigned first: the `selected` validator filters
-        # against it. `filtered` starts as everything, matching the
-        # empty-search-box rule, so it reads correctly before the frontend
-        # has mounted.
+        # against it, and `filtered` is derived from it.
         super().__init__(
-            items=_items,
+            items=_dedupe(list(items or [])),
             selected=list(selected or []),
-            filtered=list(_items),
             **kwargs,
         )
 
-    @traitlets.validate("items", "selected", "filtered")
+    @traitlets.validate("items", "selected", "_matches")
     def _dedupe_trait(self, proposal: dict) -> list[str]:
         return _dedupe(proposal["value"])
 
@@ -80,20 +94,31 @@ class SearchSelect(anywidget.AnyWidget):
 
     @traitlets.observe("items")
     def _drop_unknown_items(self, change: dict) -> None:
-        """Keep `selected` and `filtered` to items that still exist.
+        """Keep `selected` to items that still exist.
 
         The frontend does this too, but it must also hold with no frontend
-        attached — before the widget has rendered, or in a headless kernel —
+        attached -- before the widget has rendered, or in a headless kernel --
         or `selected` would keep reporting items the widget no longer offers.
         """
         known = set(change["new"])
-
         selected = [item for item in self.selected if item in known]
         if selected != self.selected:
             self.selected = selected
 
-        # Removed items cannot match any query, so intersecting is correct
-        # whether or not one is active.
-        filtered = [item for item in self.filtered if item in known]
+    @traitlets.observe("items", "query", "_matches")
+    def _recompute_filtered(self, change: dict) -> None:
+        """Derive `filtered` from the query and the frontend's matches.
+
+        An empty query matches everything, so `filtered` is the whole item list
+        and no match data needs to cross the wire.
+        """
+        if not self.query:
+            filtered = list(self.items)
+        else:
+            # Removed items cannot match any query, so intersecting keeps this
+            # correct when `items` changes while a query is active.
+            known = set(self.items)
+            filtered = [item for item in self._matches if item in known]
+
         if filtered != self.filtered:
             self.filtered = filtered

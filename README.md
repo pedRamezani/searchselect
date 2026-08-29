@@ -35,7 +35,8 @@ Works in JupyterLab, Jupyter Notebook, marimo Notebook, VS Code and anywhere els
 | ---------- | ------------ | ----------------------------------------- |
 | `items`    | read / write | The strings on offer.                     |
 | `selected` | read / write | The items the user has explicitly ticked. |
-| `filtered` | read         | The items matching the current search.    |
+| `query`    | read / write | The text in the search box.               |
+| `filtered` | read         | The items matching the current query.     |
 
 The distinction that matters: **`selected` is an explicit choice, `filtered` is a query
 result.** They are independent, and both are useful.
@@ -46,7 +47,14 @@ picker.selected            # -> ['age', 'height']
 
 # Or don't tick anything: type a pattern and take everything it matched.
 picker.filtered            # -> ['lab_glucose', 'lab_sodium', ...]
+
+# The query is writable too, so you can drive it from Python.
+picker.query = "lab_"
 ```
+
+The header checkbox selects **everything matching the current query**, not just
+what's on screen — so `query` plus select-all is the click-free route to the same
+set `filtered` reports.
 
 ### Rules
 
@@ -60,6 +68,10 @@ picker.filtered            # -> ['lab_glucose', 'lab_sodium', ...]
   ticks on items that still exist and drops the rest.
 - **`selected` is writable.** Set it from Python to preselect or clear; the checkboxes
   follow. Values not present in `items` are ignored.
+- **`filtered` lags `query` by one round trip.** The frontend does the matching, because
+  it renders what you see and is therefore the authority on what matched. So setting
+  `query` and reading `filtered` in the same cell gives you the previous value — read it
+  from the next cell. With no frontend attached, nothing matches a non-empty query.
 
 ## Searching
 
@@ -78,11 +90,23 @@ is the real API, and the package has no dataframe dependency of any kind.
 
 ## Performance
 
-Filtering happens in the browser, so the whole list is sent to the frontend once. That
-is comfortable for the lists this is built for — hundreds to a few thousand items. Much
-larger lists will work but get progressively less pleasant, mostly because paging through
-them ten at a time is tedious. If you need to go significantly bigger, open an issue;
-moving the search into the kernel is a known option.
+The list is virtualised: only the rows on screen exist in the DOM, about 25 of them,
+whether you pass two hundred items or a million. Scrolling and rendering are therefore
+flat in the size of the list.
+
+Two things are not flat, and they set the practical ceiling:
+
+- **Transport.** Items are sent to the frontend once, as JSON over the Jupyter comm —
+  roughly 22 MB at a million items. Matches only travel back while a query is active,
+  since an empty query means "everything" and the frontend already has that list, so
+  the common case costs nothing.
+- **The row model.** Filtering runs in the browser, and the table builds one row object
+  per item to do it. This is the real wall, somewhere past a few hundred thousand.
+
+In practice: comfortable into the tens of thousands, usable past that, unpleasant around
+a million. If you need to go further, open an issue — moving the search into the kernel
+so items never leave Python is the known fix, and it would not change any of the API
+above.
 
 ## Development
 

@@ -6,14 +6,12 @@
 		type ColumnDef,
 		type ColumnFiltersState,
 		type FilterFn,
-		type PaginationState,
 		type Row,
 		type RowSelectionState,
 		type SortingState,
 		type VisibilityState,
 		getCoreRowModel,
 		getFilteredRowModel,
-		getPaginationRowModel,
 		getSortedRowModel
 	} from '@tanstack/table-core';
 	import DataTableCheckbox from '$lib/data-table/data-table-checkbox.svelte';
@@ -59,8 +57,15 @@
 	}
 
 	// Data loading
-	let { bindings }: { bindings: { items: string[]; selected: string[]; filtered: string[] } } =
-		$props();
+	//
+	// `filtered` is deliberately absent: Python derives it locally from `query`
+	// and `matches`, so an empty query costs no traffic at all rather than
+	// echoing the entire item list straight back.
+	let {
+		bindings
+	}: {
+		bindings: { items: string[]; selected: string[]; query: string; _matches: string[] };
+	} = $props();
 	// Python normalises `items` on the way in (dedupes, first occurrence wins,
 	// order otherwise preserved), so it is taken at face value here.
 	const items = $derived<string[]>(bindings.items);
@@ -94,12 +99,16 @@
 	const columns: ColumnDef<Item>[] = [
 		{
 			id: 'select',
+			// Deliberately the all-rows variants, not the page variants: with the
+			// list virtualised there are no pages, and "select all" should mean
+			// "everything matching the current query" -- the click-free path to
+			// the same set `filtered` reports.
 			header: ({ table }) =>
 				renderComponent(DataTableCheckbox, {
-					checked: table.getIsAllPageRowsSelected(),
-					indeterminate: table.getIsSomePageRowsSelected() && !table.getIsAllPageRowsSelected(),
-					onCheckedChange: (value) => table.toggleAllPageRowsSelected(!!value),
-					'aria-label': 'Select all'
+					checked: table.getIsAllRowsSelected(),
+					indeterminate: table.getIsSomeRowsSelected() && !table.getIsAllRowsSelected(),
+					onCheckedChange: (value) => table.toggleAllRowsSelected(!!value),
+					'aria-label': 'Select all matching items'
 				}),
 			cell: ({ row }) =>
 				renderComponent(DataTableCheckbox, {
@@ -123,7 +132,6 @@
 		}
 	];
 
-	let pagination = $state<PaginationState>({ pageIndex: 0, pageSize: 10 });
 	let sorting = $state<SortingState>([]);
 	let columnFilters = $state<ColumnFiltersState>([]);
 	let rowSelection = $state<RowSelectionState>({});
@@ -139,9 +147,6 @@
 		// moved into that row index.
 		getRowId: (row) => row.item,
 		state: {
-			get pagination() {
-				return pagination;
-			},
 			get sorting() {
 				return sorting;
 			},
@@ -156,16 +161,8 @@
 			}
 		},
 		getCoreRowModel: getCoreRowModel(),
-		getPaginationRowModel: getPaginationRowModel(),
 		getSortedRowModel: getSortedRowModel(),
 		getFilteredRowModel: getFilteredRowModel(),
-		onPaginationChange: (updater) => {
-			if (typeof updater === 'function') {
-				pagination = updater(pagination);
-			} else {
-				pagination = updater;
-			}
-		},
 		onSortingChange: (updater) => {
 			if (typeof updater === 'function') {
 				sorting = updater(sorting);
@@ -237,6 +234,44 @@
 	const filteredItems = $derived<string[]>(
 		table.getFilteredRowModel().rows.map((row) => row.getValue('item') as string)
 	);
+
+	// Virtual window
+	//
+	// Rows are a fixed height (locked in CSS below), so the visible slice is
+	// pure arithmetic -- no measurement, no dependency, no per-row observers.
+	// This bounds the DOM, not the row model: TanStack still builds a Row per
+	// item, which is the real wall somewhere past a few hundred thousand.
+	const OVERSCAN = 8;
+
+	const rows = $derived(table.getRowModel().rows);
+
+	let scrollEl = $state<HTMLElement | undefined>();
+	let scrollTop = $state(0);
+	let viewportHeight = $state(0);
+
+	// Seeded from the CSS below, then corrected from a real rendered row. The
+	// host notebook restyles tables aggressively (see the VS Code fixes at the
+	// bottom of this file), so measuring beats trusting a constant: if a row is
+	// not the height we assumed, the spacers drift and the scrollbar lies.
+	let rowHeight = $state(37);
+
+	$effect(() => {
+		// Depend on the rendered slice so this re-measures after a re-render.
+		visibleRows;
+		const probe = scrollEl?.querySelector<HTMLElement>('tbody tr:not([aria-hidden])');
+		const measured = probe?.offsetHeight ?? 0;
+		if (measured > 0 && measured !== untrack(() => rowHeight)) {
+			rowHeight = measured;
+		}
+	});
+
+	const firstVisible = $derived(Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN));
+	const lastVisible = $derived(
+		Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN)
+	);
+	const visibleRows = $derived(rows.slice(firstVisible, lastVisible));
+	const padTop = $derived(firstVisible * rowHeight);
+	const padBottom = $derived(Math.max(0, (rows.length - lastVisible) * rowHeight));
 
 	// Output formats
 	const outputFormats = [
@@ -337,16 +372,35 @@
 		}
 	});
 
+	// The query is two-way, so it can be set from Python as well as typed.
 	$effect(() => {
-		const outgoing = filteredItems;
+		const incoming = bindings.query;
+		if (incoming !== untrack(() => query)) {
+			table.getColumn('item')?.setFilterValue(incoming);
+		}
+	});
+
+	$effect(() => {
+		const outgoing = query;
+		if (untrack(() => bindings.query) !== outgoing) {
+			bindings.query = outgoing;
+		}
+	});
+
+	// Matches only cross the wire while a query is active. With an empty query
+	// Python already knows the answer -- it is the whole item list -- so sending
+	// it would double the payload to say nothing (22MB each way at a million
+	// items). Clearing the query sends one empty list and stops.
+	$effect(() => {
+		const outgoing = query === '' ? [] : filteredItems;
 		const timer = setTimeout(() => {
 			if (
 				!sameList(
-					untrack(() => bindings.filtered),
+					untrack(() => bindings._matches),
 					outgoing
 				)
 			) {
-				bindings.filtered = outgoing;
+				bindings._matches = outgoing;
 			}
 		}, 150);
 		return () => clearTimeout(timer);
@@ -384,68 +438,69 @@
 			</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
-	<Table.Root class="rounded border border-input">
-		<Table.Header>
-			{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
-				<Table.Row>
-					{#each headerGroup.headers as header (header.id)}
-						<Table.Head
-							class={cn(
-								'border-b border-input [&:has([role=checkbox])]:ps-3',
-								header.id === 'select' ? 'w-10' : undefined
-							)}
-						>
-							{#if !header.isPlaceholder}
-								<FlexRender
-									content={header.column.columnDef.header}
-									context={header.getContext()}
-								/>
-							{/if}
-						</Table.Head>
+	<div
+		bind:this={scrollEl}
+		class="relative h-72 overflow-y-auto rounded border border-input"
+		onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+		bind:clientHeight={viewportHeight}
+	>
+		<Table.Root>
+			<Table.Header>
+				{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
+					<Table.Row>
+						{#each headerGroup.headers as header (header.id)}
+							<Table.Head
+								class={cn(
+									'sticky top-0 z-10 border-b border-input bg-background [&:has([role=checkbox])]:ps-3',
+									header.id === 'select' ? 'w-10' : undefined
+								)}
+							>
+								{#if !header.isPlaceholder}
+									<FlexRender
+										content={header.column.columnDef.header}
+										context={header.getContext()}
+									/>
+								{/if}
+							</Table.Head>
+						{/each}
+					</Table.Row>
+				{/each}
+			</Table.Header>
+			<Table.Body>
+				{#if rows.length === 0}
+					<Table.Row class="border-b border-input">
+						<Table.Cell colspan={columns.length} class="h-24 text-center">No results.</Table.Cell>
+					</Table.Row>
+				{:else}
+					<!-- Spacers stand in for the rows outside the window, so the
+					     scrollbar reflects the whole list while the DOM holds only
+					     what is on screen. -->
+					{#if padTop > 0}
+						<tr aria-hidden="true" style="height: {padTop}px"></tr>
+					{/if}
+					{#each visibleRows as row (row.id)}
+						<Table.Row data-state={row.getIsSelected() && 'selected'} class="border-b border-input">
+							{#each row.getVisibleCells() as cell (cell.id)}
+								<Table.Cell class="[&:has([role=checkbox])]:ps-3">
+									<FlexRender content={cell.column.columnDef.cell} context={cell.getContext()} />
+								</Table.Cell>
+							{/each}
+						</Table.Row>
 					{/each}
-				</Table.Row>
-			{/each}
-		</Table.Header>
-		<Table.Body>
-			{#each table.getRowModel().rows as row (row.id)}
-				<Table.Row data-state={row.getIsSelected() && 'selected'} class="border-b border-input">
-					{#each row.getVisibleCells() as cell (cell.id)}
-						<Table.Cell class="[&:has([role=checkbox])]:ps-3">
-							<FlexRender content={cell.column.columnDef.cell} context={cell.getContext()} />
-						</Table.Cell>
-					{/each}
-				</Table.Row>
-			{:else}
-				<Table.Row class="border-b border-input">
-					<Table.Cell colspan={columns.length} class="h-24 text-center">No results.</Table.Cell>
-				</Table.Row>
-			{/each}
-		</Table.Body>
-	</Table.Root>
-	<div class="flex items-center justify-end space-x-2">
-		<div class="flex-1 text-sm text-muted-foreground">
-			{selectedItems.length} selected · {filteredItems.length} shown
-		</div>
-		<div class="space-x-2">
-			<Button
-				variant="outline"
-				size="sm"
-				class="border-input"
-				onclick={() => table.previousPage()}
-				disabled={!table.getCanPreviousPage()}
-			>
-				Previous
+					{#if padBottom > 0}
+						<tr aria-hidden="true" style="height: {padBottom}px"></tr>
+					{/if}
+				{/if}
+			</Table.Body>
+		</Table.Root>
+	</div>
+	<div class="flex items-center justify-between text-sm text-muted-foreground">
+		<span>{selectedItems.length} selected · {filteredItems.length} shown</span>
+		{#if selectedItems.length > 0}
+			<Button variant="outline" size="sm" class="border-input" onclick={() => (rowSelection = {})}>
+				Clear selection
 			</Button>
-			<Button
-				variant="outline"
-				size="sm"
-				class="border-input"
-				onclick={() => table.nextPage()}
-				disabled={!table.getCanNextPage()}
-			>
-				Next
-			</Button>
-		</div>
+		{/if}
 	</div>
 	<ScrollArea class="h-48 rounded border border-input">
 		<div
@@ -524,6 +579,31 @@
 
 	#search-widget :global(td) {
 		padding: calc(var(--spacing) * 2);
+	}
+
+	/*
+	The virtual window computes the visible slice from a constant row height, so
+	rows must actually be that height -- otherwise the spacers drift and the
+	scrollbar lies. Keep this in sync with ROW_HEIGHT in the script.
+	*/
+	#search-widget :global(tbody tr) {
+		height: 37px;
+	}
+
+	#search-widget :global(tbody td) {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	/*
+	Spacer rows stand in for off-screen rows. Their inline height wins over the
+	rule above on specificity; they only need their borders suppressed so they
+	do not draw as empty rows.
+	*/
+	#search-widget :global(tbody tr[aria-hidden='true']) {
+		border: 0;
+		padding: 0;
 	}
 
 	#search-widget :global(tr:nth-child(even)) {

@@ -51,6 +51,9 @@ What has been typed into the search box, together with the matching mode
 A query that cannot be parsed — a malformed regex — matches nothing and is reported as
 invalid. It is not the same as an empty query, which matches everything.
 
+The empty query is the resting state, and it is the reason _filtered_ can always be
+answered without asking: everything matches, so the answer is _items_.
+
 ## Host
 
 The notebook surface the widget is rendered in: JupyterLab, VS Code, or anything else

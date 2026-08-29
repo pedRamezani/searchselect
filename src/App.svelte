@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+
 	// Data table imports
 	import {
 		type ColumnDef,
@@ -15,7 +17,7 @@
 		getSortedRowModel
 	} from '@tanstack/table-core';
 	import DataTableCheckbox from '$lib/data-table/data-table-checkbox.svelte';
-	import DataTableTermButton from '$lib/data-table/data-table-term-button.svelte';
+	import DataTableItemButton from '$lib/data-table/data-table-item-button.svelte';
 
 	// Components
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -41,58 +43,55 @@
 	import './app.css';
 
 	// Helpers
-	function termLengthFmt(length: number): string {
+	function itemLengthFmt(length: number): string {
 		if (length === 0) {
-			return 'No terms';
+			return 'No items';
 		} else if (length === 1) {
-			return '1 unique term';
+			return '1 item';
 		} else {
-			return `${length} unique terms`;
+			return `${length} items`;
 		}
 	}
 
+	/** Order-sensitive list equality, used to break sync loops between Python and the UI. */
+	function sameList(a: string[], b: string[]): boolean {
+		return a.length === b.length && a.every((value, index) => value === b[index]);
+	}
+
 	// Data loading
-	let { bindings }: { bindings: { terms: string[]; selected: string[]; filtered: string[] } } =
+	let { bindings }: { bindings: { items: string[]; selected: string[]; filtered: string[] } } =
 		$props();
-	let uniqueTerms = $derived<string[]>(Array.from(new Set(bindings.terms)));
-	const termLengthDescription = $derived<string>(termLengthFmt(uniqueTerms.length));
+	// Python normalises `items` on the way in (dedupes, first occurrence wins,
+	// order otherwise preserved), so it is taken at face value here.
+	const items = $derived<string[]>(bindings.items);
+	const itemLengthDescription = $derived<string>(itemLengthFmt(items.length));
 
 	// Table setup
-	type Terms = {
-		id: string;
-		term: string;
+	type Item = {
+		item: string;
 	};
 
-	const data = $derived<Terms[]>(
-		uniqueTerms.map((term, index) => ({
-			id: String(index),
-			term
-		}))
-	);
+	const data = $derived<Item[]>(items.map((item) => ({ item })));
 
-	const termsFilterFn: FilterFn<Terms> = (
-		row: Row<Terms>,
-		columnId: string,
-		filterValue: string
-	) => {
-		if (filterValue === '') {
-			return false;
-		} else {
-			const term = row.getValue(columnId) as string;
-			if (searchOptions.includes('regex')) {
-				const flags = searchOptions.includes('case-insensitive') ? 'i' : '';
-				return searchTermValid && new RegExp(searchTerm, flags).test(term);
-			}
+	// NOTE: TanStack drops empty-string filters before ever calling this
+	// (`shouldAutoRemoveFilter`), so an empty search box means "no filter" and
+	// every item survives. There is deliberately no empty-string branch here.
+	const itemsFilterFn: FilterFn<Item> = (row: Row<Item>, columnId: string) => {
+		const item = row.getValue(columnId) as string;
 
-			if (searchOptions.includes('case-insensitive')) {
-				return term.toLowerCase().includes(searchTerm.toLowerCase());
-			} else {
-				return term.includes(searchTerm);
-			}
+		if (queryOptions.includes('regex')) {
+			const flags = queryOptions.includes('case-insensitive') ? 'i' : '';
+			return queryValid && new RegExp(query, flags).test(item);
 		}
+
+		if (queryOptions.includes('case-insensitive')) {
+			return item.toLowerCase().includes(query.toLowerCase());
+		}
+
+		return item.includes(query);
 	};
 
-	const columns: ColumnDef<Terms>[] = [
+	const columns: ColumnDef<Item>[] = [
 		{
 			id: 'select',
 			header: ({ table }) =>
@@ -113,14 +112,14 @@
 			enableHiding: false
 		},
 		{
-			accessorKey: 'term',
+			accessorKey: 'item',
 			header: ({ column }) =>
-				renderComponent(DataTableTermButton, {
+				renderComponent(DataTableItemButton, {
 					class: 'has-[>svg]:px-0 text-sm leading-none font-medium',
 					onclick: column.getToggleSortingHandler()
 				}),
 			enableHiding: false,
-			filterFn: termsFilterFn
+			filterFn: itemsFilterFn
 		}
 	];
 
@@ -135,6 +134,10 @@
 			return data;
 		},
 		columns,
+		// Key selection on the item itself, not its position. Without this,
+		// reassigning `items` from Python leaves ticks on whatever string has
+		// moved into that row index.
+		getRowId: (row) => row.item,
 		state: {
 			get pagination() {
 				return pagination;
@@ -194,20 +197,20 @@
 	});
 
 	// Search setup
-	let searchOptions = $state<string[]>([]);
-	let searchTerm = $derived<string>(
-		(table.getColumn('term')?.getFilterValue() as string | undefined) ?? ''
+	let queryOptions = $state<string[]>([]);
+	let query = $derived<string>(
+		(table.getColumn('item')?.getFilterValue() as string | undefined) ?? ''
 	);
 
-	const searchTermValid = $derived.by<boolean>(() => {
-		if (searchTerm === '') {
+	const queryValid = $derived.by<boolean>(() => {
+		if (query === '') {
 			return true;
 		}
 
-		if (searchOptions.includes('regex')) {
+		if (queryOptions.includes('regex')) {
 			try {
-				const flags = searchOptions.includes('case-insensitive') ? 'i' : '';
-				new RegExp(searchTerm, flags);
+				const flags = queryOptions.includes('case-insensitive') ? 'i' : '';
+				new RegExp(query, flags);
 				return true;
 			} catch (e) {
 				return false;
@@ -217,12 +220,23 @@
 		return true;
 	});
 	const currentStateDescription = $derived<string>(
-		searchTerm === '' ? termLengthDescription : searchTermValid ? '' : 'Invalid regex'
+		query === '' ? itemLengthDescription : queryValid ? '' : 'Invalid regex'
 	);
 
-	const onSearchTermChange = (searchTerm: string) => {
-		table.getColumn('term')?.setFilterValue(searchTerm);
+	const onQueryChange = (query: string) => {
+		table.getColumn('item')?.setFilterValue(query);
 	};
+
+	// Results
+	//
+	// `selected` is an explicit choice, so it deliberately survives the current
+	// query — it is read off `rowSelection` against the full item list, not off
+	// the filtered row model. Filtering the table does not unselect anything.
+	// `filtered` is a query result: with an empty search box it is every item.
+	const selectedItems = $derived<string[]>(items.filter((item) => rowSelection[item]));
+	const filteredItems = $derived<string[]>(
+		table.getFilteredRowModel().rows.map((row) => row.getValue('item') as string)
+	);
 
 	// Output formats
 	const outputFormats = [
@@ -235,22 +249,20 @@
 		outputFormats.find((f) => f.value === outputFormat)?.label ?? 'Select an output format'
 	);
 
-	const quotedSelectedTerms = $derived<string[]>(
-		table.getFilteredSelectedRowModel().rows.map((row) => `"${row.getValue('term')}"`)
-	);
-	const indentedJoinedQuotedSelectedTerms = $derived<string | null>(
-		quotedSelectedTerms.length > 0
-			? `<span class="ps-[2ch] block">${quotedSelectedTerms
+	const quotedSelectedItems = $derived<string[]>(selectedItems.map((item) => `"${item}"`));
+	const indentedJoinedQuotedSelectedItems = $derived<string | null>(
+		quotedSelectedItems.length > 0
+			? `<span class="ps-[2ch] block">${quotedSelectedItems
 					.map((quoted) => `<span class="inline-block font-semibold text-chart-2">${quoted}</span>`)
 					.join(', ')}</span>`
 			: null
 	);
 
-	const rawPythonList = $derived(`[${quotedSelectedTerms.join(', ')}]`);
-	const pythonList = $derived(`[${indentedJoinedQuotedSelectedTerms ?? ''}]`);
+	const rawPythonList = $derived(`[${quotedSelectedItems.join(', ')}]`);
+	const pythonList = $derived(`[${indentedJoinedQuotedSelectedItems ?? ''}]`);
 
-	const rawPolarsExpr = $derived(`pl.col(${quotedSelectedTerms.join(', ')})`);
-	const polarsExpr = $derived(`pl.col(${indentedJoinedQuotedSelectedTerms ?? '[]'})`);
+	const rawPolarsExpr = $derived(`pl.col(${quotedSelectedItems.join(', ')})`);
+	const polarsExpr = $derived(`pl.col(${indentedJoinedQuotedSelectedItems ?? '[]'})`);
 
 	const rawOutput = $derived(outputFormat === 'python' ? rawPythonList : rawPolarsExpr);
 	const output = $derived(outputFormat === 'python' ? pythonList : polarsExpr);
@@ -292,11 +304,52 @@
 	}
 
 	// Binding synchronisation
+	//
+	// Python -> UI. Unknown values are dropped, which is what makes reassigning
+	// `items` keep ticks on items that still exist and discard the rest.
 	$effect(() => {
-		bindings.selected = table.getFilteredSelectedRowModel().rows.map((row) => row.getValue('term'));
+		const incoming = bindings.selected;
+		if (
+			sameList(
+				incoming,
+				untrack(() => selectedItems)
+			)
+		)
+			return;
+
+		const known = new Set(untrack(() => items));
+		rowSelection = Object.fromEntries(
+			incoming.filter((item) => known.has(item)).map((item) => [item, true])
+		);
 	});
+
+	// UI -> Python. Selection is click-driven and low frequency, so it syncs
+	// immediately; `filtered` changes on every keystroke, so it is debounced.
 	$effect(() => {
-		bindings.filtered = table.getFilteredRowModel().rows.map((row) => row.getValue('term'));
+		const outgoing = selectedItems;
+		if (
+			!sameList(
+				untrack(() => bindings.selected),
+				outgoing
+			)
+		) {
+			bindings.selected = outgoing;
+		}
+	});
+
+	$effect(() => {
+		const outgoing = filteredItems;
+		const timer = setTimeout(() => {
+			if (
+				!sameList(
+					untrack(() => bindings.filtered),
+					outgoing
+				)
+			) {
+				bindings.filtered = outgoing;
+			}
+		}, 150);
+		return () => clearTimeout(timer);
 	});
 </script>
 
@@ -304,11 +357,11 @@
 	<div class="flex flex-col gap-2 md:flex-row">
 		<InputGroup.Root class="max-w-md">
 			<InputGroup.Input
-				bind:value={searchTerm}
-				aria-invalid={!searchTermValid}
-				placeholder="Filter terms..."
-				oninput={(e) => onSearchTermChange(e.currentTarget.value)}
-				onchange={(e) => onSearchTermChange(e.currentTarget.value)}
+				bind:value={query}
+				aria-invalid={!queryValid}
+				placeholder="Filter items..."
+				oninput={(e) => onQueryChange(e.currentTarget.value)}
+				onchange={(e) => onQueryChange(e.currentTarget.value)}
 			/>
 			<InputGroup.Addon>
 				<SearchIcon />
@@ -317,8 +370,8 @@
 		</InputGroup.Root>
 
 		<ToggleGroup.Root
-			bind:value={searchOptions}
-			onValueChange={() => onSearchTermChange(searchTerm)}
+			bind:value={queryOptions}
+			onValueChange={() => onQueryChange(query)}
 			variant="outline"
 			size="sm"
 			type="multiple"
@@ -331,69 +384,6 @@
 			</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
-	<style>
-		/* 
-		VS-Code specific CSS fixes
-		This is needed to override some weird table styles with higher specificity.
-		*/
-
-		table,
-		thead,
-		tr,
-		th,
-		td,
-		tbody {
-			border-color: var(--input);
-			border-spacing: 0;
-			border-collapse: collapse;
-		}
-
-		table {
-			border-style: solid;
-			border-color: var(--input);
-			border-width: 1px;
-		}
-
-		table,
-		th,
-		tr {
-			vertical-align: middle;
-			text-align: left;
-			border-bottom-style: solid;
-			border-bottom-color: var(--input);
-			border-bottom-width: 1px;
-		}
-
-		thead {
-			font-weight: medium;
-			background-color: unset;
-		}
-
-		thead tr[data-state='selected'] {
-			background-color: var(--muted);
-		}
-
-		th th:has([role='checkbox']) {
-			padding-right: calc(var(--spacing) * 0);
-			padding-inline-start: calc(var(--spacing) * 3);
-		}
-
-		td {
-			padding: calc(var(--spacing) * 2);
-		}
-
-		tr:nth-child(even) {
-			background-color: unset;
-		}
-
-		tr:nth-child(even):hover {
-			background-color: color-mix(in oklab, var(--muted) 50%, transparent);
-		}
-
-		tr:nth-child(even)[data-state='selected'] {
-			background-color: var(--muted);
-		}
-	</style>
 	<Table.Root class="rounded border border-input">
 		<Table.Header>
 			{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
@@ -434,8 +424,7 @@
 	</Table.Root>
 	<div class="flex items-center justify-end space-x-2">
 		<div class="flex-1 text-sm text-muted-foreground">
-			{table.getFilteredSelectedRowModel().rows.length} of
-			{table.getFilteredRowModel().rows.length} term(s) selected.
+			{selectedItems.length} selected · {filteredItems.length} shown
 		</div>
 		<div class="space-x-2">
 			<Button
@@ -483,3 +472,69 @@
 		</div>
 	</ScrollArea>
 </div>
+
+<style>
+	/*
+	VS Code specific CSS fixes.
+
+	VS Code's notebook stylesheet styles bare `table`/`tr`/`td` elements, so these
+	rules exist to win that fight. They are confined to `#search-widget` and go
+	through Svelte's scoper, which also appends this component's scope class — so
+	they out-specify VS Code without leaking onto other tables in the notebook
+	(pandas reprs, other widgets). Do NOT move this back inside the markup: a
+	style element in a template is emitted as a literal, unscoped DOM node and
+	restyles the entire page.
+	*/
+
+	#search-widget :global(table),
+	#search-widget :global(thead),
+	#search-widget :global(tr),
+	#search-widget :global(th),
+	#search-widget :global(td),
+	#search-widget :global(tbody) {
+		border-color: var(--input);
+		border-spacing: 0;
+		border-collapse: collapse;
+	}
+
+	#search-widget :global(table) {
+		border-style: solid;
+		border-color: var(--input);
+		border-width: 1px;
+	}
+
+	#search-widget :global(table),
+	#search-widget :global(th),
+	#search-widget :global(tr) {
+		vertical-align: middle;
+		text-align: left;
+		border-bottom-style: solid;
+		border-bottom-color: var(--input);
+		border-bottom-width: 1px;
+	}
+
+	#search-widget :global(thead) {
+		font-weight: medium;
+		background-color: unset;
+	}
+
+	#search-widget :global(thead tr[data-state='selected']) {
+		background-color: var(--muted);
+	}
+
+	#search-widget :global(td) {
+		padding: calc(var(--spacing) * 2);
+	}
+
+	#search-widget :global(tr:nth-child(even)) {
+		background-color: unset;
+	}
+
+	#search-widget :global(tr:nth-child(even):hover) {
+		background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+	}
+
+	#search-widget :global(tr:nth-child(even)[data-state='selected']) {
+		background-color: var(--muted);
+	}
+</style>

@@ -7,6 +7,6 @@
 </script>
 
 <Button {variant} {size} {...restProps}>
-	Term
+	Item
 	<ArrowUpDownIcon class="ms-2" />
 </Button>

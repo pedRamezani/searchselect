@@ -3,28 +3,68 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "searchwidget"
-version = "0.0.0"
+name = "searchselect"
+version = "0.1.0"
+authors = [
+  { name="Pedram Ramezani", email="me@pedramramezani.de" },
+]
+description = "A searchable multi-select AnyWidget for picking strings from a list in a notebook."
 dependencies = ["anywidget"]
 readme = "README.md"
-requires-python=">=3.9"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Jupyter",
+    "Framework :: Jupyter :: JupyterLab",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/pedRamezani/searchselect"
+Issues = "https://github.com/pedRamezani/searchselect/issues"
 
 # Dependency groups (recognized by `uv`). For more details, visit:
 # https://peps.python.org/pep-0735/
 [dependency-groups]
-dev = ["watchfiles", "jupyterlab", "polars", "pandas"]
+dev = ["watchfiles", "jupyterlab", "polars"]
 
 [tool.hatch.build]
+dev-mode-dirs = ["py"]
 only-packages = true
-packages = ["py/searchwidget"]
-artifacts = ["py/searchwidget/static/*"]
+packages = ["py/searchselect"]
+artifacts = ["py/searchselect/static/*"]
 
-[tool.hatch.build.hooks.jupyter-builder]
+# The npm build runs for the sdist only. `uv build` produces the sdist from this
+# tree (where package.json exists) and then builds the wheel from the unpacked
+# sdist (where it does not), so a hook registered for both targets fails on the
+# second step.
+#
+# There is deliberately no `skip-if-exists` here: the dev and production vite
+# configs share an outDir, and skipping would package a stale `pnpm dev` bundle
+# (unminified, inline sourcemap, ~6x larger) in place of a real build. The wheel
+# step doesn't need it because it has no hook to skip, and `vite.config.ts` sets
+# `emptyOutDir` so every production build starts clean.
+[tool.hatch.build.targets.sdist.hooks.jupyter-builder]
 build-function = "hatch_jupyter_builder.npm_builder"
-ensured-targets = ["py/searchwidget/static/main.js"]
-skip-if-exists = ["py/searchwidget/static/main.js"]
+ensured-targets = [
+    "py/searchselect/static/main.js",
+    "py/searchselect/static/main.css",
+]
 dependencies = ["hatch-jupyter-builder>=0.5.0"]
 
-[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+[tool.hatch.build.targets.sdist.hooks.jupyter-builder.build-kwargs]
 npm = "npm"
 build_cmd = "build"
+
+# The sdist flattens `py/searchselect/` to `searchselect/` at its root, so the
+# wheel-from-sdist step needs the post-flattening path. Both are listed so that
+# building a wheel directly from this tree works too.
+[tool.hatch.build.targets.wheel]
+packages = ["py/searchselect", "searchselect"]
+artifacts = ["searchselect/static/*", "py/searchselect/static/*"]

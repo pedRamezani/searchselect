@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pathlib
+import re
+from typing import Callable
 
 import anywidget
 import traitlets
@@ -27,6 +29,12 @@ class SearchSelect(anywidget.AnyWidget):
     >>> picker = SearchSelect(items=df.columns)
     >>> picker
     >>> df.select(picker.selected)
+
+    Matching runs here, in Python, using :mod:`re`. That means the pattern typed
+    into the search box is a Python regex: it can be pasted straight into your
+    own code and it will behave identically. The trade-off is that searching
+    needs a responsive kernel -- the search box will not update while a long
+    cell is running.
     """
 
     _esm = bundler_assets_dir / "main.js"
@@ -41,26 +49,32 @@ class SearchSelect(anywidget.AnyWidget):
     #: not present in :attr:`items` are ignored. Filtering never changes it.
     selected = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
-    #: The text in the search box. Writable from Python.
-    #:
-    #: Matching happens in the frontend -- it renders what the user sees, so it
-    #: is the authority on what matched. That means `filtered` catches up one
-    #: comm round trip after this is set, not synchronously. With no frontend
-    #: attached (headless, or before the widget renders) nothing matches a
-    #: non-empty query, because nothing is there to do the matching.
+    #: The text in the search box. Writable from Python, and applied
+    #: immediately -- :attr:`filtered` is correct in the same cell.
     query = traitlets.Unicode("").tag(sync=True)
 
+    #: Whether :attr:`query` is a regular expression rather than a substring.
+    regex = traitlets.Bool(False).tag(sync=True)
+
+    #: Whether matching distinguishes case.
+    case_sensitive = traitlets.Bool(True).tag(sync=True)
+
     #: The items matching the current query. With an empty query this is every
-    #: item, not an empty list.
+    #: item, not an empty list. An unparseable query matches nothing.
     #:
-    #: Deliberately *not* synced: it is derived locally from `_matches`, so an
-    #: empty query costs no traffic at all. The frontend already has the full
-    #: item list, so echoing it back would double the payload for nothing --
-    #: 22MB each way at a million items.
+    #: Deliberately *not* synced. The frontend is told the matches through
+    #: `_matches`, which stays empty while the query is, so the resting state
+    #: costs no list traffic -- echoing the full list back to say "everything"
+    #: would be 22MB each way at a million items.
     filtered = traitlets.List(traitlets.Unicode())
 
-    #: Frontend -> Python. Only populated while a query is active; cleared to
-    #: an empty list as soon as the query is. Internal; read `filtered`.
+    #: The error from compiling :attr:`query` as a regex, or "" if it is valid.
+    #: Python's own `re.error` text, which is considerably more useful than a
+    #: bare "invalid".
+    query_error = traitlets.Unicode("").tag(sync=True)
+
+    #: Python -> frontend. The matches to display, empty while the query is.
+    #: Internal; read :attr:`filtered`.
     _matches = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
     def __init__(
@@ -70,12 +84,13 @@ class SearchSelect(anywidget.AnyWidget):
         **kwargs: object,
     ) -> None:
         # `items` must be assigned first: the `selected` validator filters
-        # against it, and `filtered` is derived from it.
+        # against it, and the matches are derived from it.
         super().__init__(
             items=_dedupe(list(items or [])),
             selected=list(selected or []),
             **kwargs,
         )
+        self._rematch()
 
     @traitlets.validate("items", "selected", "_matches")
     def _dedupe_trait(self, proposal: dict) -> list[str]:
@@ -105,20 +120,41 @@ class SearchSelect(anywidget.AnyWidget):
         if selected != self.selected:
             self.selected = selected
 
-    @traitlets.observe("items", "query", "_matches")
-    def _recompute_filtered(self, change: dict) -> None:
-        """Derive `filtered` from the query and the frontend's matches.
-
-        An empty query matches everything, so `filtered` is the whole item list
-        and no match data needs to cross the wire.
-        """
+    @traitlets.observe("items", "query", "regex", "case_sensitive")
+    def _rematch(self, change: dict | None = None) -> None:
+        """Recompute the matches for the current query."""
         if not self.query:
-            filtered = list(self.items)
-        else:
-            # Removed items cannot match any query, so intersecting keeps this
-            # correct when `items` changes while a query is active.
-            known = set(self.items)
-            filtered = [item for item in self._matches if item in known]
+            # Everything matches, and the frontend already has the item list,
+            # so it is told nothing rather than told everything.
+            self.query_error = ""
+            self._matches = []
+            self.filtered = list(self.items)
+            return
 
-        if filtered != self.filtered:
-            self.filtered = filtered
+        try:
+            predicate = self._predicate()
+        except re.error as error:
+            # An unparseable pattern matches nothing, which is distinct from an
+            # empty query matching everything.
+            self.query_error = str(error)
+            self._matches = []
+            self.filtered = []
+            return
+
+        self.query_error = ""
+        matches = [item for item in self.items if predicate(item)]
+        self._matches = matches
+        self.filtered = matches
+
+    def _predicate(self) -> Callable[[str], bool]:
+        """Build the match test. Raises `re.error` for an invalid pattern."""
+        if self.regex:
+            pattern = re.compile(self.query, 0 if self.case_sensitive else re.IGNORECASE)
+            return lambda item: pattern.search(item) is not None
+
+        if self.case_sensitive:
+            query = self.query
+            return lambda item: query in item
+
+        query = self.query.casefold()
+        return lambda item: query in item.casefold()

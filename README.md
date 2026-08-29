@@ -31,12 +31,15 @@ Works in JupyterLab, Jupyter Notebook, marimo Notebook, VS Code and anywhere els
 
 `SearchSelect(items=None, selected=None)`
 
-| Trait      | Direction    | Meaning                                   |
-| ---------- | ------------ | ----------------------------------------- |
-| `items`    | read / write | The strings on offer.                     |
-| `selected` | read / write | The items the user has explicitly ticked. |
-| `query`    | read / write | The text in the search box.               |
-| `filtered` | read         | The items matching the current query.     |
+| Trait            | Direction    | Meaning                                           |
+| ---------------- | ------------ | ------------------------------------------------- |
+| `items`          | read / write | The strings on offer.                             |
+| `selected`       | read / write | The items the user has explicitly ticked.         |
+| `query`          | read / write | The text in the search box.                       |
+| `regex`          | read / write | Treat `query` as a regex rather than a substring. |
+| `case_sensitive` | read / write | Whether matching distinguishes case.              |
+| `filtered`       | read         | The items matching the current query.             |
+| `query_error`    | read         | Python's `re.error` text, or `""` if valid.       |
 
 The distinction that matters: **`selected` is an explicit choice, `filtered` is a query
 result.** They are independent, and both are useful.
@@ -68,18 +71,34 @@ set `filtered` reports.
   ticks on items that still exist and drops the rest.
 - **`selected` is writable.** Set it from Python to preselect or clear; the checkboxes
   follow. Values not present in `items` are ignored.
-- **`filtered` lags `query` by one round trip.** The frontend does the matching, because
-  it renders what you see and is therefore the authority on what matched. So setting
-  `query` and reading `filtered` in the same cell gives you the previous value — read it
-  from the next cell. With no frontend attached, nothing matches a non-empty query.
+- **An unparseable query matches nothing.** Which is not the same as an empty query,
+  which matches everything. `query_error` carries the reason.
 
 ## Searching
 
 Two toggles sit next to the search box:
 
 - **Case-insensitive** matching.
-- **Regex** matching. An invalid pattern is reported inline and matches nothing until
-  it parses.
+- **Regex** matching. An invalid pattern is reported inline, with Python's own error
+  message, and matches nothing until it parses.
+
+**Matching runs in Python, using `re`.** That means the pattern you type is a Python
+regex — `(?P<name>...)` works, `\d` and `\w` are Unicode as they are everywhere else in
+your code, and you can paste the pattern straight into the next cell and get identical
+results:
+
+```python
+picker.regex = True
+picker.query = r"^lab_(?P<assay>\w+)"
+
+# the same pattern, same semantics, in your own code
+[c for c in df.columns if re.match(picker.query, c)]
+```
+
+The trade-off is that searching needs a responsive kernel. If a long cell is running,
+the search box will not update until it finishes. Filtering in the browser would stay
+live, but it would mean a JavaScript regex — a different dialect that quietly rejects
+`(?P<name>...)` and treats `\d` as ASCII-only — and a pattern you can't reuse.
 
 ## Copying out
 
@@ -97,15 +116,18 @@ flat in the size of the list.
 Two things are not flat, and they set the practical ceiling:
 
 - **Transport.** Items are sent to the frontend once, as JSON over the Jupyter comm —
-  roughly 22 MB at a million items. Matches only travel back while a query is active,
-  since an empty query means "everything" and the frontend already has that list, so
-  the common case costs nothing.
-- **The row model.** Filtering runs in the browser, and the table builds one row object
-  per item to do it. This is the real wall, somewhere past a few hundred thousand.
+  roughly 22 MB at a million items. Matches travel back only while a query is active;
+  an empty query means "everything", and the frontend already has that list, so the
+  resting state costs nothing.
+- **Matching.** Each query is a scan in Python: about 2 ms at ten thousand items, 60 ms
+  at a hundred thousand, and up to 600 ms at a million for an expensive pattern. Input
+  is debounced, so a keystroke does not become a request, but this is what you feel
+  first on very large lists.
 
-In practice: comfortable into the tens of thousands, usable past that, unpleasant around
-a million. If you need to go further, open an issue — moving the search into the kernel
-so items never leave Python is the known fix, and it would not change any of the API
+In practice: comfortable into the tens of thousands, usable past that, sluggish around a
+million. If you need to go further, open an issue — pushing the search into DuckDB and
+serving the visible window with `LIMIT`/`OFFSET` would break both ceilings at once,
+though it would change the pattern dialect to RE2 and cost you the Python-regex property
 above.
 
 ## Development

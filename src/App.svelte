@@ -4,14 +4,10 @@
 	// Data table imports
 	import {
 		type ColumnDef,
-		type ColumnFiltersState,
-		type FilterFn,
-		type Row,
 		type RowSelectionState,
 		type SortingState,
 		type VisibilityState,
 		getCoreRowModel,
-		getFilteredRowModel,
 		getSortedRowModel
 	} from '@tanstack/table-core';
 	import DataTableCheckbox from '$lib/data-table/data-table-checkbox.svelte';
@@ -58,13 +54,24 @@
 
 	// Data loading
 	//
-	// `filtered` is deliberately absent: Python derives it locally from `query`
-	// and `matches`, so an empty query costs no traffic at all rather than
-	// echoing the entire item list straight back.
+	// Matching happens in Python, so the pattern the user types is a Python
+	// regex they can paste into their own code. This component renders the
+	// result rather than computing it: no filter function, no column filters,
+	// no filtered row model. `filtered` is absent because Python derives it --
+	// `_matches` stays empty while the query is, so the resting state costs no
+	// list traffic instead of echoing every item back to say "everything".
 	let {
 		bindings
 	}: {
-		bindings: { items: string[]; selected: string[]; query: string; _matches: string[] };
+		bindings: {
+			items: string[];
+			selected: string[];
+			query: string;
+			regex: boolean;
+			case_sensitive: boolean;
+			query_error: string;
+			_matches: string[];
+		};
 	} = $props();
 	// Python normalises `items` on the way in (dedupes, first occurrence wins,
 	// order otherwise preserved), so it is taken at face value here.
@@ -76,25 +83,10 @@
 		item: string;
 	};
 
-	const data = $derived<Item[]>(items.map((item) => ({ item })));
-
-	// NOTE: TanStack drops empty-string filters before ever calling this
-	// (`shouldAutoRemoveFilter`), so an empty search box means "no filter" and
-	// every item survives. There is deliberately no empty-string branch here.
-	const itemsFilterFn: FilterFn<Item> = (row: Row<Item>, columnId: string) => {
-		const item = row.getValue(columnId) as string;
-
-		if (queryOptions.includes('regex')) {
-			const flags = queryOptions.includes('case-insensitive') ? 'i' : '';
-			return queryValid && new RegExp(query, flags).test(item);
-		}
-
-		if (queryOptions.includes('case-insensitive')) {
-			return item.toLowerCase().includes(query.toLowerCase());
-		}
-
-		return item.includes(query);
-	};
+	// An empty query means everything, and Python does not resend the item list
+	// to say so.
+	const shownItems = $derived<string[]>(bindings.query === '' ? items : (bindings._matches ?? []));
+	const data = $derived<Item[]>(shownItems.map((item) => ({ item })));
 
 	const columns: ColumnDef<Item>[] = [
 		{
@@ -127,13 +119,11 @@
 					class: 'has-[>svg]:px-0 text-sm leading-none font-medium',
 					onclick: column.getToggleSortingHandler()
 				}),
-			enableHiding: false,
-			filterFn: itemsFilterFn
+			enableHiding: false
 		}
 	];
 
 	let sorting = $state<SortingState>([]);
-	let columnFilters = $state<ColumnFiltersState>([]);
 	let rowSelection = $state<RowSelectionState>({});
 	let columnVisibility = $state<VisibilityState>({});
 
@@ -155,26 +145,15 @@
 			},
 			get rowSelection() {
 				return rowSelection;
-			},
-			get columnFilters() {
-				return columnFilters;
 			}
 		},
 		getCoreRowModel: getCoreRowModel(),
 		getSortedRowModel: getSortedRowModel(),
-		getFilteredRowModel: getFilteredRowModel(),
 		onSortingChange: (updater) => {
 			if (typeof updater === 'function') {
 				sorting = updater(sorting);
 			} else {
 				sorting = updater;
-			}
-		},
-		onColumnFiltersChange: (updater) => {
-			if (typeof updater === 'function') {
-				columnFilters = updater(columnFilters);
-			} else {
-				columnFilters = updater;
 			}
 		},
 		onColumnVisibilityChange: (updater) => {
@@ -194,53 +173,70 @@
 	});
 
 	// Search setup
-	let queryOptions = $state<string[]>([]);
-	let query = $derived<string>(
-		(table.getColumn('item')?.getFilterValue() as string | undefined) ?? ''
-	);
+	//
+	// The input is local so typing stays responsive, and is pushed to Python on
+	// a debounce: every query costs a round trip now that Python does the
+	// matching, so a keystroke must not become a request.
+	let queryInput = $state('');
 
-	const queryValid = $derived.by<boolean>(() => {
-		if (query === '') {
-			return true;
+	// Python -> UI, for when the query is set programmatically.
+	$effect(() => {
+		const incoming = bindings.query;
+		if (incoming !== untrack(() => queryInput)) {
+			queryInput = incoming;
 		}
-
-		if (queryOptions.includes('regex')) {
-			try {
-				const flags = queryOptions.includes('case-insensitive') ? 'i' : '';
-				new RegExp(query, flags);
-				return true;
-			} catch (e) {
-				return false;
-			}
-		}
-
-		return true;
 	});
-	const currentStateDescription = $derived<string>(
-		query === '' ? itemLengthDescription : queryValid ? '' : 'Invalid regex'
+
+	$effect(() => {
+		const outgoing = queryInput;
+		const timer = setTimeout(() => {
+			if (untrack(() => bindings.query) !== outgoing) {
+				bindings.query = outgoing;
+			}
+		}, 150);
+		return () => clearTimeout(timer);
+	});
+
+	// True while the kernel has not yet answered for what has been typed. Also
+	// true, and stuck, if the kernel is busy -- which is the price of matching
+	// in Python.
+	const pending = $derived(queryInput !== bindings.query);
+
+	// The toggles are Python traits, so a mode can be set from either side. The
+	// UI models them as a multi-select of string values; Python models them as
+	// two booleans, which is the better shape to read in a notebook.
+	const queryModes = $derived<string[]>(
+		[bindings.case_sensitive ? null : 'case-insensitive', bindings.regex ? 'regex' : null].filter(
+			(mode): mode is string => mode !== null
+		)
 	);
 
-	const onQueryChange = (query: string) => {
-		table.getColumn('item')?.setFilterValue(query);
+	const onQueryModesChange = (modes: string[]) => {
+		bindings.case_sensitive = !modes.includes('case-insensitive');
+		bindings.regex = modes.includes('regex');
 	};
+
+	// Python reports the real `re.error`, which says far more than "invalid".
+	const queryError = $derived<string>(bindings.query_error ?? '');
+	const queryValid = $derived<boolean>(queryError === '');
+
+	const currentStateDescription = $derived<string>(
+		!queryValid ? queryError : queryInput === '' ? itemLengthDescription : pending ? '…' : ''
+	);
 
 	// Results
 	//
 	// `selected` is an explicit choice, so it deliberately survives the current
 	// query — it is read off `rowSelection` against the full item list, not off
-	// the filtered row model. Filtering the table does not unselect anything.
-	// `filtered` is a query result: with an empty search box it is every item.
+	// what is currently shown. Filtering the table does not unselect anything.
 	const selectedItems = $derived<string[]>(items.filter((item) => rowSelection[item]));
-	const filteredItems = $derived<string[]>(
-		table.getFilteredRowModel().rows.map((row) => row.getValue('item') as string)
-	);
 
 	// Virtual window
 	//
-	// Rows are a fixed height (locked in CSS below), so the visible slice is
-	// pure arithmetic -- no measurement, no dependency, no per-row observers.
-	// This bounds the DOM, not the row model: TanStack still builds a Row per
-	// item, which is the real wall somewhere past a few hundred thousand.
+	// The visible slice is pure arithmetic over a measured row height -- no
+	// dependency, no per-row observers. This bounds the DOM, not the row model:
+	// the table still builds a Row per shown item, so a broad query over a very
+	// large list is the remaining wall.
 	const OVERSCAN = 8;
 
 	const rows = $derived(table.getRowModel().rows);
@@ -372,60 +368,33 @@
 		}
 	});
 
-	// The query is two-way, so it can be set from Python as well as typed.
-	$effect(() => {
-		const incoming = bindings.query;
-		if (incoming !== untrack(() => query)) {
-			table.getColumn('item')?.setFilterValue(incoming);
-		}
-	});
-
-	$effect(() => {
-		const outgoing = query;
-		if (untrack(() => bindings.query) !== outgoing) {
-			bindings.query = outgoing;
-		}
-	});
-
-	// Matches only cross the wire while a query is active. With an empty query
-	// Python already knows the answer -- it is the whole item list -- so sending
-	// it would double the payload to say nothing (22MB each way at a million
-	// items). Clearing the query sends one empty list and stops.
-	$effect(() => {
-		const outgoing = query === '' ? [] : filteredItems;
-		const timer = setTimeout(() => {
-			if (
-				!sameList(
-					untrack(() => bindings._matches),
-					outgoing
-				)
-			) {
-				bindings._matches = outgoing;
-			}
-		}, 150);
-		return () => clearTimeout(timer);
-	});
+	// The query itself is synced above, next to the input it belongs to. There
+	// is deliberately no effect sending matches: Python computes them.
 </script>
 
 <div id="search-widget" class="my-4 flex w-full max-w-lg flex-col gap-4">
 	<div class="flex flex-col gap-2 md:flex-row">
 		<InputGroup.Root class="max-w-md">
 			<InputGroup.Input
-				bind:value={query}
+				bind:value={queryInput}
 				aria-invalid={!queryValid}
 				placeholder="Filter items..."
-				oninput={(e) => onQueryChange(e.currentTarget.value)}
-				onchange={(e) => onQueryChange(e.currentTarget.value)}
+				title={queryError}
 			/>
 			<InputGroup.Addon>
 				<SearchIcon />
 			</InputGroup.Addon>
-			<InputGroup.Addon align="inline-end">{currentStateDescription}</InputGroup.Addon>
+			<InputGroup.Addon
+				align="inline-end"
+				class={cn('truncate', !queryValid && 'text-destructive')}
+			>
+				{currentStateDescription}
+			</InputGroup.Addon>
 		</InputGroup.Root>
 
 		<ToggleGroup.Root
-			bind:value={queryOptions}
-			onValueChange={() => onQueryChange(query)}
+			value={queryModes}
+			onValueChange={onQueryModesChange}
 			variant="outline"
 			size="sm"
 			type="multiple"
@@ -495,7 +464,7 @@
 		</Table.Root>
 	</div>
 	<div class="flex items-center justify-between text-sm text-muted-foreground">
-		<span>{selectedItems.length} selected · {filteredItems.length} shown</span>
+		<span>{selectedItems.length} selected · {shownItems.length} shown</span>
 		{#if selectedItems.length > 0}
 			<Button variant="outline" size="sm" class="border-input" onclick={() => (rowSelection = {})}>
 				Clear selection

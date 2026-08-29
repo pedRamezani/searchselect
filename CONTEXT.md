@@ -48,8 +48,13 @@ one by picking, one by describing. A caller chooses which question they are aski
 What has been typed into the search box, together with the matching mode
 (case-sensitivity, regex). Produces _filtered_ from _items_.
 
-A query that cannot be parsed — a malformed regex — matches nothing and is reported as
-invalid. It is not the same as an empty query, which matches everything.
+A query is expressed in the language of the kernel, not the browser: a regex query is a
+Python regex, and means in the widget exactly what it means in the surrounding code. A
+query is therefore something a person can take away with them, in the same way a
+_selection_ is.
+
+A query that cannot be parsed — a malformed regex — matches nothing, and says why. It is
+not the same as an empty query, which matches everything.
 
 The empty query is the resting state, and it is the reason _filtered_ can always be
 answered without asking: everything matches, so the answer is _items_.

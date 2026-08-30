@@ -6,6 +6,8 @@ of strings; the user searches, filters and ticks; you read the result back in Py
 It is deliberately domain-neutral — it knows nothing but strings. Column names, category
 values, file paths, feature names, whatever you have a list of.
 
+![SearchSelect](https://raw.githubusercontent.com/pedRamezani/searchselect/main/assets/searchselect-light.png)
+
 ```sh
 pip install searchselect
 ```
@@ -101,6 +103,16 @@ the search box will not update until it finishes. Filtering in the browser would
 live, but it would mean a JavaScript regex — a different dialect that quietly rejects
 `(?P<name>...)` and treats `\d` as ASCII-only — and a pattern you can't reuse.
 
+## The list
+
+The list is virtualised, so only the visible rows exist in the DOM however long it is.
+
+- **The header retracts** as you scroll down and returns the moment you scroll back up,
+  so a long list gets the whole box without putting the sort control out of reach.
+- **Sorting cycles** A–Z, Z–A, then back to the original order — which is the order you
+  passed `items` in, since that order is preserved.
+- **The header checkbox selects every match**, not just what is on screen.
+
 ## Theme
 
 By default the widget infers light or dark from the host notebook. That is
@@ -111,6 +123,8 @@ someone whose OS setting you don't know, or simply out of preference:
 ```python
 picker.theme = "light"   # or "dark", or "auto"
 ```
+
+![SearchSelect in dark mode](https://raw.githubusercontent.com/pedRamezani/searchselect/main/assets/searchselect-dark.png)
 
 **In VS Code, prefer `"light"`.** VS Code paints the widget output area white
 whatever the editor theme is, and that area is outside the widget, so a dark
@@ -159,9 +173,17 @@ pnpm dev # start a development server
 uv run jupyter lab notebooks/example.ipynb
 ```
 
-Note that `pnpm dev` and `pnpm build` write to the same output directory. `pnpm dev`
-produces an unminified bundle with an inline sourcemap, so always run `pnpm build`
-before packaging a release.
+`pnpm dev` and `pnpm build` write to the same directory, and the dev bundle is
+unminified with an inline sourcemap — roughly six times the size. `pnpm build` empties
+that directory first and the packaging hook runs it for the sdist, so `uv build` always
+produces a real production bundle regardless of what a dev server left behind.
+
+Releasing:
+
+```sh
+uv build
+uvx twine upload dist/*
+```
 
 ## License
 

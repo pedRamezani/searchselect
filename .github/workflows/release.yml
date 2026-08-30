@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 jobs:
   build:
@@ -29,7 +28,6 @@ jobs:
       # A tag that disagrees with pyproject.toml produces a release nobody can
       # find, and PyPI will not let the version be reused.
       - name: Check the tag matches the packaged version
-        if: startsWith(github.ref, 'refs/tags/v')
         run: uv run --no-project python .github/scripts/check_tag.py "${GITHUB_REF_NAME#v}"
 
       - uses: actions/upload-artifact@v4
@@ -53,3 +51,32 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Publish the GitHub release
+    runs-on: ubuntu-latest
+    # After PyPI, deliberately. A PyPI version cannot be replaced, only
+    # superseded, whereas a GitHub release can be edited or deleted -- so the
+    # irreversible step goes first, and the release only appears if it worked.
+    needs: pypi-publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Release notes are generated from the history since the last tag.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*

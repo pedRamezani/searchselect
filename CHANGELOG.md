@@ -2,7 +2,7 @@
 
 ## [0.1.0] - 2026-08-30
 
-First release. Previously developed, unreleased, as `searchwidget`.
+First release.
 
 ### Added
 

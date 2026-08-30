@@ -1,5 +1,10 @@
 # searchselect
 
+[![PyPI](https://img.shields.io/pypi/v/searchselect.svg)](https://pypi.org/project/searchselect/)
+[![Python versions](https://img.shields.io/pypi/pyversions/searchselect.svg)](https://pypi.org/project/searchselect/)
+[![License](https://img.shields.io/pypi/l/searchselect.svg)](https://github.com/pedRamezani/searchselect/blob/main/LICENSE)
+[![CI](https://github.com/pedRamezani/searchselect/actions/workflows/ci.yml/badge.svg)](https://github.com/pedRamezani/searchselect/actions/workflows/ci.yml)
+
 A searchable multi-select [anywidget](https://anywidget.dev) for notebooks. Give it a list
 of strings; the user searches, filters and ticks; you read the result back in Python.
 

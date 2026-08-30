@@ -30,3 +30,5 @@ __pycache__
 
 # Static files
 py/searchselect/static
+# Architecture decision records, kept local for now.
+docs/adr/

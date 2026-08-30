@@ -117,6 +117,7 @@
 			header: ({ column }) =>
 				renderComponent(DataTableItemButton, {
 					class: 'has-[>svg]:px-0 text-sm leading-none font-medium',
+					sorted: column.getIsSorted(),
 					onclick: column.getToggleSortingHandler()
 				}),
 			enableHiding: false
@@ -219,6 +220,14 @@
 	// Python reports the real `re.error`, which says far more than "invalid".
 	const queryError = $derived<string>(bindings.query_error ?? '');
 	const queryValid = $derived<boolean>(queryError === '');
+
+	const emptyMessage = $derived<string>(
+		items.length === 0
+			? 'No items'
+			: !queryValid
+				? 'The pattern is invalid'
+				: 'No items match this query'
+	);
 
 	const currentStateDescription = $derived<string>(
 		!queryValid ? queryError : queryInput === '' ? itemLengthDescription : pending ? '…' : ''
@@ -396,20 +405,23 @@
 			value={queryModes}
 			onValueChange={onQueryModesChange}
 			variant="outline"
-			size="sm"
+			size="default"
 			type="multiple"
 		>
 			<ToggleGroup.Item value="case-insensitive" aria-label="Toggle case insensitive">
-				<CaseSensitiveIcon class="size-4" />
+				<CaseSensitiveIcon class="size-4.5" />
 			</ToggleGroup.Item>
 			<ToggleGroup.Item value="regex" aria-label="Toggle regex">
-				<RegexIcon class="size-4" />
+				<RegexIcon class="size-4.5" />
 			</ToggleGroup.Item>
 		</ToggleGroup.Root>
 	</div>
+	<!-- Sized for the header plus about 12 rows at the default row height. The
+	     row height is measured rather than assumed, so a host that restyles rows
+	     taller will simply show fewer of them. -->
 	<div
 		bind:this={scrollEl}
-		class="relative h-72 overflow-y-auto rounded border border-input"
+		class="relative h-123 overflow-y-auto rounded-md border border-input"
 		onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
 		bind:clientHeight={viewportHeight}
 	>
@@ -436,11 +448,7 @@
 				{/each}
 			</Table.Header>
 			<Table.Body>
-				{#if rows.length === 0}
-					<Table.Row class="border-b border-input">
-						<Table.Cell colspan={columns.length} class="h-24 text-center">No results.</Table.Cell>
-					</Table.Row>
-				{:else}
+				{#if rows.length > 0}
 					<!-- Spacers stand in for the rows outside the window, so the
 					     scrollbar reflects the whole list while the DOM holds only
 					     what is on screen. -->
@@ -462,6 +470,17 @@
 				{/if}
 			</Table.Body>
 		</Table.Root>
+		{#if rows.length === 0}
+			<!-- Overlaid rather than rendered as a table row: a row draws its own
+			     borders and sits at the top, which reads as a second box inside the
+			     box. The padding offsets the sticky header so the text centres in
+			     the area below it. -->
+			<div
+				class="pointer-events-none absolute inset-0 flex items-center justify-center pt-12 text-sm text-muted-foreground"
+			>
+				{emptyMessage}
+			</div>
+		{/if}
 	</div>
 	<div class="flex items-center justify-between text-sm text-muted-foreground">
 		<span>{selectedItems.length} selected · {shownItems.length} shown</span>
@@ -471,7 +490,7 @@
 			</Button>
 		{/if}
 	</div>
-	<ScrollArea class="h-48 rounded border border-input">
+	<ScrollArea class="h-48 rounded-md border border-input">
 		<div
 			class="relative p-4"
 			onmousedown={preMouseDown}
@@ -479,7 +498,7 @@
 			role="textbox"
 			tabindex="0"
 		>
-			<Select.Root type="single" name="favoriteFruit" bind:value={outputFormat}>
+			<Select.Root type="single" name="outputFormat" bind:value={outputFormat}>
 				<Select.Trigger class="mb-2 border-none p-0 text-sm leading-none font-medium">
 					{outputFormatTriggerContent}
 				</Select.Trigger>

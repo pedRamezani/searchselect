@@ -40,6 +40,7 @@ Works in JupyterLab, Jupyter Notebook, marimo Notebook, VS Code and anywhere els
 | `case_sensitive` | read / write | Whether matching distinguishes case.              |
 | `filtered`       | read         | The items matching the current query.             |
 | `query_error`    | read         | Python's `re.error` text, or `""` if valid.       |
+| `theme`          | read / write | `"auto"` (default), `"light"` or `"dark"`.        |
 
 The distinction that matters: **`selected` is an explicit choice, `filtered` is a query
 result.** They are independent, and both are useful.
@@ -99,6 +100,22 @@ The trade-off is that searching needs a responsive kernel. If a long cell is run
 the search box will not update until it finishes. Filtering in the browser would stay
 live, but it would mean a JavaScript regex — a different dialect that quietly rejects
 `(?P<name>...)` and treats `\d` as ASCII-only — and a pattern you can't reuse.
+
+## Theme
+
+By default the widget infers light or dark from the host notebook. That is
+inference, not a lookup — there is no standard way for a host to announce its
+theme — so pin it when the guess is wrong, when a notebook will be read by
+someone whose OS setting you don't know, or simply out of preference:
+
+```python
+picker.theme = "light"   # or "dark", or "auto"
+```
+
+**In VS Code, prefer `"light"`.** VS Code paints the widget output area white
+whatever the editor theme is, and that area is outside the widget, so a dark
+widget ends up sitting on a white surround. The widget can only paint up to its
+own edge; `"light"` removes the mismatch.
 
 ## Copying out
 

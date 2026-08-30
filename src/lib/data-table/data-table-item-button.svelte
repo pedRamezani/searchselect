@@ -27,9 +27,9 @@
 <Button {variant} {size} title={label} aria-label={label} {...restProps}>
 	Item
 	{#if sorted === 'asc'}
-		<ArrowUpIcon class="ms-2 size-4" />
+		<ArrowUpIcon class="ms-2 size-4 text-muted-foreground" />
 	{:else if sorted === 'desc'}
-		<ArrowDownIcon class="ms-2 size-4" />
+		<ArrowDownIcon class="ms-2 size-4 text-muted-foreground" />
 	{:else}
 		<ArrowUpDownIcon class="ms-2 size-4 text-muted-foreground" />
 	{/if}

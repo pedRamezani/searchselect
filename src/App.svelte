@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { createHostTheme } from '$lib/host-theme.svelte.js';
 
 	// Data table imports
 	import {
@@ -36,6 +37,10 @@
 	import { cn } from '$lib/utils';
 	import './app.css';
 
+	// Drives shadcn's `.dark` on this widget's own root, so the palette follows
+	// the host notebook without restyling the rest of the page.
+	const hostTheme = createHostTheme();
+
 	// Helpers
 	function itemLengthFmt(length: number): string {
 		if (length === 0) {
@@ -70,6 +75,7 @@
 			regex: boolean;
 			case_sensitive: boolean;
 			query_error: string;
+			theme: 'auto' | 'light' | 'dark';
 			_matches: string[];
 		};
 	} = $props();
@@ -77,6 +83,10 @@
 	// order otherwise preserved), so it is taken at face value here.
 	const items = $derived<string[]>(bindings.items);
 	const itemLengthDescription = $derived<string>(itemLengthFmt(items.length));
+
+	// A pinned theme wins over detection, which is inference and can be wrong:
+	// there is no standard way for a host to announce its theme.
+	const isDark = $derived(bindings.theme === 'auto' ? hostTheme.isDark : bindings.theme === 'dark');
 
 	// Table setup
 	type Item = {
@@ -116,7 +126,11 @@
 			accessorKey: 'item',
 			header: ({ column }) =>
 				renderComponent(DataTableItemButton, {
-					class: 'has-[>svg]:px-0 text-sm leading-none font-medium',
+					class:
+						// Ghost's hover fill hugs the text once padding is removed, so it
+						// is suppressed in both palettes (ghost sets a separate dark rule).
+						// The icon brightening keeps a hover cue without a background.
+						'has-[>svg]:p-0 text-sm leading-none font-medium hover:bg-transparent dark:hover:bg-transparent hover:[&_svg]:text-foreground',
 					sorted: column.getIsSorted(),
 					onclick: column.getToggleSortingHandler()
 				}),
@@ -250,9 +264,51 @@
 
 	const rows = $derived(table.getRowModel().rows);
 
-	let scrollEl = $state<HTMLElement | undefined>();
+	// ScrollArea's viewport is the element that actually scrolls, so the window
+	// is driven from it rather than from a container we own.
+	let scrollEl = $state<HTMLElement | null>(null);
 	let scrollTop = $state(0);
 	let viewportHeight = $state(0);
+
+	// The header retracts on the way down and returns the moment the user heads
+	// up, so a long list gets the whole box while the sort control and
+	// select-all stay a flick away.
+	let headerHidden = $state(false);
+	let headerHeight = $state(48);
+	let lastScrollTop = 0;
+
+	$effect(() => {
+		const viewport = scrollEl;
+		if (!viewport) return;
+
+		const onScroll = () => {
+			const current = viewport.scrollTop;
+			const delta = current - lastScrollTop;
+
+			// Ignore sub-pixel jitter and momentum wobble, or the header
+			// flickers as the direction keeps flipping.
+			if (Math.abs(delta) > 4) {
+				// Reveal on any upward movement; hide only once the header
+				// itself has been scrolled past, so a nudge near the top does
+				// not snatch it away.
+				headerHidden = delta > 0 && current > headerHeight;
+				lastScrollTop = current;
+			}
+
+			scrollTop = current;
+		};
+		const measure = () => (viewportHeight = viewport.clientHeight);
+
+		measure();
+		viewport.addEventListener('scroll', onScroll, { passive: true });
+		const observer = new ResizeObserver(measure);
+		observer.observe(viewport);
+
+		return () => {
+			viewport.removeEventListener('scroll', onScroll);
+			observer.disconnect();
+		};
+	});
 
 	// Seeded from the CSS below, then corrected from a real rendered row. The
 	// host notebook restyles tables aggressively (see the VS Code fixes at the
@@ -267,6 +323,12 @@
 		const measured = probe?.offsetHeight ?? 0;
 		if (measured > 0 && measured !== untrack(() => rowHeight)) {
 			rowHeight = measured;
+		}
+
+		const header = scrollEl?.querySelector<HTMLElement>('thead tr');
+		const headerMeasured = header?.offsetHeight ?? 0;
+		if (headerMeasured > 0 && headerMeasured !== untrack(() => headerHeight)) {
+			headerHeight = headerMeasured;
 		}
 	});
 
@@ -381,139 +443,159 @@
 	// is deliberately no effect sending matches: Python computes them.
 </script>
 
-<div id="search-widget" class="my-4 flex w-full max-w-lg flex-col gap-4">
-	<div class="flex flex-col gap-2 md:flex-row">
-		<InputGroup.Root class="max-w-md">
-			<InputGroup.Input
-				bind:value={queryInput}
-				aria-invalid={!queryValid}
-				placeholder="Filter items..."
-				title={queryError}
-			/>
-			<InputGroup.Addon>
-				<SearchIcon />
-			</InputGroup.Addon>
-			<InputGroup.Addon
-				align="inline-end"
-				class={cn('truncate', !queryValid && 'text-destructive')}
-			>
-				{currentStateDescription}
-			</InputGroup.Addon>
-		</InputGroup.Root>
+<div id="search-widget" class:dark={isDark} class="w-full bg-background p-4">
+	<div class="flex w-full max-w-lg flex-col gap-4">
+		<div class="flex flex-col gap-2 md:flex-row">
+			<InputGroup.Root class="max-w-md rounded-md">
+				<InputGroup.Input
+					bind:value={queryInput}
+					aria-invalid={!queryValid}
+					placeholder="Filter items..."
+					title={queryError}
+				/>
+				<InputGroup.Addon>
+					<SearchIcon />
+				</InputGroup.Addon>
+				<InputGroup.Addon
+					align="inline-end"
+					class={cn('truncate', !queryValid && 'text-destructive')}
+				>
+					{currentStateDescription}
+				</InputGroup.Addon>
+			</InputGroup.Root>
 
-		<ToggleGroup.Root
-			value={queryModes}
-			onValueChange={onQueryModesChange}
-			variant="outline"
-			size="default"
-			type="multiple"
-		>
-			<ToggleGroup.Item value="case-insensitive" aria-label="Toggle case insensitive">
-				<CaseSensitiveIcon class="size-4.5" />
-			</ToggleGroup.Item>
-			<ToggleGroup.Item value="regex" aria-label="Toggle regex">
-				<RegexIcon class="size-4.5" />
-			</ToggleGroup.Item>
-		</ToggleGroup.Root>
-	</div>
-	<!-- Sized for the header plus about 12 rows at the default row height. The
-	     row height is measured rather than assumed, so a host that restyles rows
-	     taller will simply show fewer of them. -->
-	<div
-		bind:this={scrollEl}
-		class="relative h-123 overflow-y-auto rounded-md border border-input"
-		onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
-		bind:clientHeight={viewportHeight}
-	>
-		<Table.Root>
-			<Table.Header>
-				{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
-					<Table.Row>
-						{#each headerGroup.headers as header (header.id)}
-							<Table.Head
-								class={cn(
-									'sticky top-0 z-10 border-b border-input bg-background [&:has([role=checkbox])]:ps-3',
-									header.id === 'select' ? 'w-10' : undefined
-								)}
-							>
-								{#if !header.isPlaceholder}
-									<FlexRender
-										content={header.column.columnDef.header}
-										context={header.getContext()}
-									/>
-								{/if}
-							</Table.Head>
-						{/each}
-					</Table.Row>
-				{/each}
-			</Table.Header>
-			<Table.Body>
-				{#if rows.length > 0}
-					<!-- Spacers stand in for the rows outside the window, so the
-					     scrollbar reflects the whole list while the DOM holds only
-					     what is on screen. -->
-					{#if padTop > 0}
-						<tr aria-hidden="true" style="height: {padTop}px"></tr>
-					{/if}
-					{#each visibleRows as row (row.id)}
-						<Table.Row data-state={row.getIsSelected() && 'selected'} class="border-b border-input">
-							{#each row.getVisibleCells() as cell (cell.id)}
-								<Table.Cell class="[&:has([role=checkbox])]:ps-3">
-									<FlexRender content={cell.column.columnDef.cell} context={cell.getContext()} />
-								</Table.Cell>
-							{/each}
-						</Table.Row>
-					{/each}
-					{#if padBottom > 0}
-						<tr aria-hidden="true" style="height: {padBottom}px"></tr>
-					{/if}
-				{/if}
-			</Table.Body>
-		</Table.Root>
-		{#if rows.length === 0}
-			<!-- Overlaid rather than rendered as a table row: a row draws its own
-			     borders and sits at the top, which reads as a second box inside the
-			     box. The padding offsets the sticky header so the text centres in
-			     the area below it. -->
-			<div
-				class="pointer-events-none absolute inset-0 flex items-center justify-center pt-12 text-sm text-muted-foreground"
+			<ToggleGroup.Root
+				value={queryModes}
+				onValueChange={onQueryModesChange}
+				variant="outline"
+				size="default"
+				type="multiple"
 			>
-				{emptyMessage}
-			</div>
-		{/if}
-	</div>
-	<div class="flex items-center justify-between text-sm text-muted-foreground">
-		<span>{selectedItems.length} selected · {shownItems.length} shown</span>
-		{#if selectedItems.length > 0}
-			<Button variant="outline" size="sm" class="border-input" onclick={() => (rowSelection = {})}>
-				Clear selection
-			</Button>
-		{/if}
-	</div>
-	<ScrollArea class="h-48 rounded-md border border-input">
-		<div
-			class="relative p-4"
-			onmousedown={preMouseDown}
-			onmouseup={preMouseUp}
-			role="textbox"
-			tabindex="0"
-		>
-			<Select.Root type="single" name="outputFormat" bind:value={outputFormat}>
-				<Select.Trigger class="mb-2 border-none p-0 text-sm leading-none font-medium">
-					{outputFormatTriggerContent}
-				</Select.Trigger>
-				<Select.Content>
-					{#each outputFormats as output (output.value)}
-						<Select.Item value={output.value} label={output.label}>
-							{output.label}
-						</Select.Item>
-					{/each}
-				</Select.Content>
-			</Select.Root>
-			<pre class="text-wrap">{@html output}</pre>
-			<CopyButton class="absolute top-2 right-2" text={rawOutput} />
+				<ToggleGroup.Item
+					value="case-insensitive"
+					aria-label="Toggle case insensitive"
+					class="rounded-l-md!"
+				>
+					<CaseSensitiveIcon class="size-4.5" />
+				</ToggleGroup.Item>
+				<ToggleGroup.Item value="regex" aria-label="Toggle regex" class="rounded-r-md!">
+					<RegexIcon class="size-4.5" />
+				</ToggleGroup.Item>
+			</ToggleGroup.Root>
 		</div>
-	</ScrollArea>
+		<!-- Height is the header plus 10 rows at the default row height (48 + 10*37).
+		     The row height is measured rather than assumed, so a host that restyles
+		     rows taller simply shows fewer of them. -->
+		<div class="relative">
+			<ScrollArea class="h-104.5 rounded-md border border-input" bind:viewportRef={scrollEl}>
+				<!-- `contents` opts out of the component's own overflow container, which
+			     would otherwise become the containing block for the sticky header and
+			     never scroll. -->
+				<Table.Root containerClass="contents">
+					<Table.Header>
+						{#each table.getHeaderGroups() as headerGroup (headerGroup.id)}
+							<Table.Row>
+								{#each headerGroup.headers as header (header.id)}
+									<Table.Head
+										class={cn(
+											'sticky top-0 z-10 bg-background transition-transform duration-200 [&:has([role=checkbox])]:ps-3',
+											headerHidden && '-translate-y-full',
+											header.id === 'select' ? 'w-10' : undefined
+										)}
+									>
+										{#if !header.isPlaceholder}
+											<FlexRender
+												content={header.column.columnDef.header}
+												context={header.getContext()}
+											/>
+										{/if}
+									</Table.Head>
+								{/each}
+							</Table.Row>
+						{/each}
+					</Table.Header>
+					<Table.Body>
+						{#if rows.length > 0}
+							<!-- Spacers stand in for the rows outside the window, so the
+							     scrollbar reflects the whole list while the DOM holds only
+							     what is on screen. -->
+							{#if padTop > 0}
+								<tr aria-hidden="true" style="height: {padTop}px"></tr>
+							{/if}
+							{#each visibleRows as row (row.id)}
+								<Table.Row
+									data-state={row.getIsSelected() && 'selected'}
+									class="border-b border-input"
+								>
+									{#each row.getVisibleCells() as cell (cell.id)}
+										<Table.Cell class="[&:has([role=checkbox])]:ps-3">
+											<FlexRender
+												content={cell.column.columnDef.cell}
+												context={cell.getContext()}
+											/>
+										</Table.Cell>
+									{/each}
+								</Table.Row>
+							{/each}
+							{#if padBottom > 0}
+								<tr aria-hidden="true" style="height: {padBottom}px"></tr>
+							{/if}
+						{/if}
+					</Table.Body>
+				</Table.Root>
+			</ScrollArea>
+			{#if rows.length === 0}
+				<!-- Overlaid rather than rendered as a table row: a row draws its own
+				     borders and sits at the top, which reads as a second box inside the
+				     box. The padding offsets the sticky header so the text centres in
+				     the area below it. -->
+				<div
+					class="pointer-events-none absolute inset-0 flex items-center justify-center pt-12 text-sm text-muted-foreground"
+				>
+					{emptyMessage}
+				</div>
+			{/if}
+		</div>
+		<div class="flex items-center justify-between text-sm text-muted-foreground">
+			<span>{selectedItems.length} selected · {shownItems.length} shown</span>
+			{#if selectedItems.length > 0}
+				<Button
+					variant="outline"
+					size="sm"
+					class="border-input"
+					onclick={() => (rowSelection = {})}
+				>
+					Clear selection
+				</Button>
+			{/if}
+		</div>
+		<ScrollArea class="h-48 rounded-md border border-input">
+			<div
+				class="relative p-4"
+				onmousedown={preMouseDown}
+				onmouseup={preMouseUp}
+				role="textbox"
+				tabindex="0"
+			>
+				<Select.Root type="single" name="outputFormat" bind:value={outputFormat}>
+					<Select.Trigger
+						class="mb-2 border-none bg-background! p-0 text-sm leading-none font-medium"
+					>
+						{outputFormatTriggerContent}
+					</Select.Trigger>
+					<Select.Content align="start">
+						{#each outputFormats as output (output.value)}
+							<Select.Item value={output.value} label={output.label}>
+								{output.label}
+							</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+				<pre class="text-wrap">{@html output}</pre>
+				<CopyButton class="absolute top-2 right-2" text={rawOutput} />
+			</div>
+		</ScrollArea>
+	</div>
 </div>
 
 <style>
@@ -540,13 +622,13 @@
 		border-collapse: collapse;
 	}
 
+	/* The scroll container draws the frame. A border here would sit just inside
+	   it and read as a doubled edge down the left and right, where no row or
+	   header covers the seam. Zero rather than absent, to override the host. */
 	#search-widget :global(table) {
-		border-style: solid;
-		border-color: var(--input);
-		border-width: 1px;
+		border-width: 0;
 	}
 
-	#search-widget :global(table),
 	#search-widget :global(th),
 	#search-widget :global(tr) {
 		vertical-align: middle;
@@ -561,12 +643,40 @@
 		background-color: unset;
 	}
 
+	/*
+	The header's bottom rule is a shadow rather than a border.
+
+	With `border-collapse: collapse` the cell borders belong to the table, not to
+	the cell, so a `position: sticky` header leaves its border behind the moment
+	it detaches, and then scrolls over the rows with no edge at all. An inset
+	shadow is painted by the element itself, so it travels with the header --
+	including while it slides out of view and back.
+	*/
+	#search-widget :global(thead tr),
+	#search-widget :global(thead th) {
+		/* Both, or the row's own border sits a pixel from the shadow and reads
+		   as a doubled line whenever the header is at rest. */
+		border-bottom-width: 0;
+	}
+
+	#search-widget :global(thead th) {
+		box-shadow: inset 0 -1px 0 var(--input);
+	}
+
 	#search-widget :global(thead tr[data-state='selected']) {
 		background-color: var(--muted);
 	}
 
 	#search-widget :global(td) {
 		padding: calc(var(--spacing) * 2);
+	}
+
+	/* The container draws the bottom edge, so the final row must not draw one a
+	   pixel above it. Spacer rows already have no border, so when one is last --
+	   meaning there are more rows below -- the last real row keeps its
+	   separator, which is correct. */
+	#search-widget :global(tbody tr:last-child) {
+		border-bottom-width: 0;
 	}
 
 	/*

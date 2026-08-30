@@ -65,5 +65,8 @@ The notebook surface the widget is rendered in: JupyterLab, VS Code, or anything
 that renders anywidget.
 
 The widget is a guest in the host. It adopts the host's typography rather than bringing
-its own, and confines its styling to itself rather than restyling the host's other
-output.
+its own, confines its styling to itself rather than restyling the host's other output,
+and paints only up to its own edge — a surround it did not draw is not its to correct.
+
+A host's theme is inferred, not announced: there is no agreed way to ask. So the
+inference can be overridden, and an explicit choice always outranks a guess.

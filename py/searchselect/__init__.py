@@ -68,6 +68,19 @@ class SearchSelect(anywidget.AnyWidget):
     #: would be 22MB each way at a million items.
     filtered = traitlets.List(traitlets.Unicode())
 
+    #: Which palette to use: "auto", "light" or "dark".
+    #:
+    #: "auto" infers it from the host notebook, which is guesswork -- there is no
+    #: standard way for a host to announce its theme, so a host that paints
+    #: nothing readable will be guessed wrong. Pin it when that happens, when a
+    #: notebook is going to be read by someone whose OS setting you do not know,
+    #: or simply because you prefer one.
+    #:
+    #: Note for VS Code: it paints the widget output area white whatever the
+    #: editor theme is, and that area lies outside the widget, so a dark widget
+    #: sits on a white surround there. "light" avoids the mismatch.
+    theme = traitlets.Enum(["auto", "light", "dark"], default_value="auto").tag(sync=True)
+
     #: The error from compiling :attr:`query` as a regex, or "" if it is valid.
     #: Python's own `re.error` text, which is considerably more useful than a
     #: bare "invalid".
@@ -81,6 +94,7 @@ class SearchSelect(anywidget.AnyWidget):
         self,
         items: list[str] | None = None,
         selected: list[str] | None = None,
+        theme: str = "auto",
         **kwargs: object,
     ) -> None:
         # `items` must be assigned first: the `selected` validator filters
@@ -88,6 +102,7 @@ class SearchSelect(anywidget.AnyWidget):
         super().__init__(
             items=_dedupe(list(items or [])),
             selected=list(selected or []),
+            theme=theme,
             **kwargs,
         )
         self._rematch()
